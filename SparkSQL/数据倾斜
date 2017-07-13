@@ -1,0 +1,26 @@
+ Spark sql处理数据倾斜方法
+定义与表现：
+数据倾斜指的是由于数据分区不均匀导致的，Spark一部分tasks承担的数据量太大，而导致整体运行时间过长的现象。一般出现在对大表的join过程中，数据表现是大表的join key集中分布在某几个取值上，spark运行时的表1
+现是job在某个或某些task的处理上停留时间过长（more than 0.5 hour）。一般分为大表join大表，大表join小表；其中大表join小表是常用案例。
+解决方案：
+数据倾斜不严重的情况下，通过增加spark.sql.shuffle.partitions，可解决某些task运行过慢的问题。如果单纯增加此配置不能解决，可使用日下方法。
+
+大表join小表：
+使用spark hash join：
+此为最有效的方法，可以在不关心大表join key分布的情况下处理数据倾斜问题。
+针对小表：
+    smallTable.registerTempTable("smallTable")
+    sql("CACHE TABLE smalTable")
+然后在spark-submit中加一个conf：spark.sql.autoBroadcastJoinThreshold=200000000。此配置限定小表大小，单位为字节，只要表大小小于此取值（此处约为200m），且被执行过cache table的小表，在做join时，都会启用hash join。
+找出大表中join key集中的几个取值，单独做处理，并与剩余的数据进行union all：
+1). 利用如下sql找到大表join key分布情况，找到集中分布的key，假设为keys：
+      select key,count(1) as num from largeTable group by key order by num desc
+2). 针对集中分布的几个key，在小表中确定取值，并进行单独赋值。注意避免hard code，应使用sql或spark api实时获取target column的取值。例如：
+      val keyTargetMaps = HashMap<key, targetValueForKey>
+      for key in keys
+        select targetColumn from smallTable where joinKey=key; as targetValueForKey
+        keyTargetMaps.updated(key, targetValueForKey)
+      针对集中分布的key直接赋值，此部分sql可自动生成：
+      for key in keys:
+        sql = sql + """when largeTable.joinKey='key' then """ +  keyTargetMaps.get(key)
+大表join大表：见大表join小表方法2.
